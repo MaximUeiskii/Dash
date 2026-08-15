@@ -1,5 +1,5 @@
 /* Офлайн-режим. Меняете index.html — поднимите номер версии ниже. */
-var CACHE = "dash-v1";
+var CACHE = "dash-v12";
 var FILES = ["./", "./index.html", "./sw.js"];
 
 self.addEventListener("install", function (e) {
