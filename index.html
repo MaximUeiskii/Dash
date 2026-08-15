@@ -291,6 +291,16 @@ nav button[disabled],.icb[disabled]{opacity:.25;pointer-events:none}
 .cd .p{display:flex;gap:2.5px;height:4px}
 .cd .p i{width:4px;height:4px;border-radius:50%;background:var(--tx3)}
 .cd .p i.b{background:var(--bad)} .cd.sel .p i{background:var(--accTx)}
+.cd .p i.pl{background:transparent;box-shadow:inset 0 0 0 1.4px var(--tx3)}
+.cd.plan{background:var(--surf2);box-shadow:inset 0 0 0 1px var(--line2)}
+.wd.plan .n{box-shadow:inset 0 0 0 1.2px var(--line2)}
+/* полноэкранный редактор заметки */
+.nedit{display:flex;flex-direction:column;gap:11px;margin-top:8px}
+.nedit .nbody{width:100%;min-height:44vh;background:var(--surf);border:1px solid var(--line);
+  border-radius:var(--r3);padding:16px;font-size:16px;line-height:1.6;resize:vertical}
+.nedit .ntitle{font-size:19px;font-weight:600;letter-spacing:-.02em;background:transparent;border:0;padding:6px 0}
+.nedit .ntitle:focus{background:transparent;border:0}
+.savebar{position:sticky;bottom:calc(84px + env(safe-area-inset-bottom));display:flex;gap:8px;padding-top:6px}
 
 /* графики */
 .chart{display:flex;align-items:flex-end;gap:6px;height:104px}
@@ -553,13 +563,15 @@ var MON=["января","февраля","марта","апреля","мая","�
 var MONN=["Январь","Февраль","Март","Апрель","Май","Июнь","Июль","Август","Сентябрь","Октябрь","Ноябрь","Декабрь"];
 var WD=["вс","пн","вт","ср","чт","пт","сб"];
 var WDF=["воскресенье","понедельник","вторник","среда","четверг","пятница","суббота"];
+var WDV=["в воскресенье","в понедельник","во вторник","в среду","в четверг","в пятницу","в субботу"];
 function mIdx(d){return (d.getDay()+6)%7}
 function wStart(s){return addD(s,-mIdx(parse(s)))}
+function wEnd(s){return addD(wStart(s),6)}
 function human(s){ if(!s)return"";
   var t=today(); if(s===t)return"сегодня"; if(s===addD(t,1))return"завтра"; if(s===addD(t,-1))return"вчера";
   if(s===addD(t,2))return"послезавтра";
   var d=parse(s), n=diffD(s,t);
-  if(n>0&&n<7) return "в "+WDF[d.getDay()];
+  if(n>0&&n<7) return WDV[d.getDay()];
   return d.getDate()+" "+MON[d.getMonth()] }
 function hm(min){ min=Math.max(0,Math.round(min)); var h=Math.floor(min/60), m=min%60;
   return h? (h+" ч"+(m?" "+m+" м":"")) : (m+" м") }
@@ -728,6 +740,7 @@ function normalize(){
   for(var k in s) if(D.settings[k]===undefined) D.settings[k]=s[k];
   if(!D.settings.rates) D.settings.rates=s.rates;
   D.habits.forEach(function(h){ if(!h.log) h.log={}; if(!Array.isArray(h.days)) h.days=[0,1,2,3,4,5,6] });
+  D.projects.forEach(function(p){ if(p.progress==null) p.progress=0; if(p.manual==null) p.manual=false });
   if(!Array.isArray(D.files)) D.files=[];
   D.tasks.forEach(function(t,i){ if(!t.prio) t.prio=5; if(t.order==null) t.order=i });
 }
@@ -842,6 +855,14 @@ function monthIn(){ return monthOps().reduce(function(s,o){ return s+(o.out?0:to
 function monthOut(){ return monthOps().reduce(function(s,o){ return s+(o.out?toRub(o.amount,o.cur):0) },0) }
 function spentCat(c){ return monthOps().reduce(function(s,o){ return s+((o.out&&o.cat===c)?toRub(o.amount,o.cur):0) },0) }
 
+/* прогресс проекта: по задачам или вручную */
+function projProgress(p){
+  if(p.manual) return clamp(p.progress||0,0,100);
+  var ts=live().filter(function(t){ return t.project===p.id });
+  if(!ts.length) return p.progress||0;
+  return Math.round(ts.filter(function(t){return t.done}).length/ts.length*100);
+}
+
 /* привычки: days — дни недели 0..6, где 0 = воскресенье. Пусто = каждый день */
 function hDays(h){ return (h.days&&h.days.length)?h.days:[0,1,2,3,4,5,6] }
 function hDue(h,d){ return hDays(h).indexOf(parse(d).getDay())>=0 }
@@ -913,7 +934,7 @@ function reviewStreak(){
 /* ============================================================
    НАВИГАЦИЯ, «СЕГОДНЯ», «ЗАДАЧИ»
    ============================================================ */
-var S={tab:"today",prev:"today",page:null,sub:{},calM:null,calSel:null,openProj:null,q:"",nq:"",bcol:1,fold:{},ask:null,habId:null,habM:null,moveId:null};
+var S={tab:"today",prev:"today",page:null,sub:{},calM:null,calSel:null,openProj:null,q:"",nq:"",bcol:1,fold:{},ask:null,habId:null,habM:null,moveId:null,noteId:null};
 var TOP=document.getElementById("top"), V=document.getElementById("v"), NAV=document.getElementById("nav");
 
 var IC={
@@ -963,6 +984,9 @@ function headBack(title,back,right){
     +'<div class="top-row" style="min-height:38px"><h1 class="grow">'+esc(title)+'</h1>'+(right||'')+'</div></div>' }
 
 /* ---------------- строка задачи ---------------- */
+function noteOpen(id){ S.noteId=id; window.scrollTo(0,0); render();
+  setTimeout(function(){ var e=document.getElementById("nb"); if(e&&!e.value) e.focus() },200) }
+
 function taskRow(x,opt){
   opt=opt||{};
   var t=today(), late=!x.done&&x.date&&x.date<t, m=[];
@@ -1007,19 +1031,6 @@ function viewToday(){
       :'<div class="empty"><b>На сегодня пусто</b>Напишите первое дело ниже</div>')
     +'<div class="addline"'+(lst.length?'':' style="border-top:1px solid var(--line)"')+'>'
     +'<span class="plus">+</span><input class="grow" data-add="3" placeholder="Что нужно сделать" enterkeyhint="done"></div></div>';
-
-  /* ближайшие сроки */
-  var soon=openT().filter(function(x){ return x.date&&x.date>t&&diffD(x.date,t)<=7 })
-    .sort(function(a,b){ return a.date.localeCompare(b.date) }).slice(0,4);
-  var dsoon=D.debts.filter(function(x){ return x.due }).sort(function(a,b){ return a.due.localeCompare(b.due) }).slice(0,2);
-  if(soon.length||dsoon.length){
-    h+='<div class="sh"><span class="kicker">Скоро</span></div><div class="card list">'
-      + dsoon.map(function(x){
-          return '<div class="it" data-a="tab" data-v="money"><div class="bd">'
-            +'<div class="tt">'+esc(x.title)+' · '+num(x.amount)+' '+(CUR[x.cur]?CUR[x.cur].s:x.cur)+'</div>'
-            +'<div class="mt"><span class="pill warn">срок '+human(x.due)+'</span></div></div></div>' }).join("")
-      + soon.map(function(x){ return taskRow(x,{noProj:false}) }).join("")+'</div>';
-  }
 
   /* привычки */
   if(D.habits.length){
@@ -1099,8 +1110,8 @@ function viewTasks(){
 var BCOLS=[
   {k:"late",n:"Просрочено",cls:"hot"},
   {k:"today",n:"Сегодня",cls:"now"},
-  {k:"week",n:"Эта неделя",cls:""},
-  {k:"later",n:"Потом",cls:""},
+  {k:"week",n:"До конца недели",cls:""},
+  {k:"later",n:"Дальше",cls:""},
   {k:"done",n:"Готово",cls:""}
 ];
 function bucket(x){
@@ -1109,14 +1120,15 @@ function bucket(x){
   if(!x.date) return "later";
   if(x.date<t) return "late";
   if(x.date===t) return "today";
-  if(diffD(x.date,t)<=7) return "week";
+  if(x.date<=wEnd(t)) return "week";
   return "later";
 }
 function boardView(){
   var by={}; BCOLS.forEach(function(c){ by[c.k]=[] });
   live().forEach(function(x){ by[bucket(x)].push(x) });
+  var we=wEnd(today());
   var h='<div class="sh"><span class="kicker">Доска</span>'
-    +'<span class="act dim">‹ › переносят</span></div>';
+    +'<span class="act dim">неделя до '+parse(we).getDate()+' '+MON[parse(we).getMonth()]+'</span></div>';
   h+='<div class="board" id="board">'+BCOLS.map(function(c,ci){
     var lst=sortT(by[c.k]).slice(0,40);
     return '<div class="bcol '+c.cls+'"><div class="bh"><span class="bt">'+c.n+'</span>'
@@ -1192,7 +1204,7 @@ function projectsView(noHead){
   if(!D.projects.length) return h+'<div class="card"><div class="empty"><b>Проектов нет</b>Проект — это то, что не делается за один раз</div></div>';
   return h+D.projects.map(function(p){
     var all=live().filter(function(t){return t.project===p.id});
-    var dn=all.filter(function(t){return t.done}).length, pr=all.length?pct(dn,all.length):0;
+    var dn=all.filter(function(t){return t.done}).length, pr=projProgress(p);
     var open=S.openProj===p.id, body="";
     if(open){
       var lst=sortT(all.filter(function(t){ return !t.done }));
@@ -1202,6 +1214,15 @@ function projectsView(noHead){
             :'<div class="empty" style="padding:18px"><b>Открытых задач нет</b></div>')+'</div>'
         +'<div class="addline" style="padding:11px 0"><span class="plus">+</span>'
         +'<input class="grow" data-addp="'+p.id+'" placeholder="Новая задача проекта" enterkeyhint="done"></div>'
+        +'<div class="row" style="margin:14px 0 4px;gap:8px">'
+        +'<span class="t2 dim grow">Прогресс: '+(p.manual?"вручную":"по задачам")+'</span>'
+        +'<button class="btn xs g" data-a="projmode" data-id="'+p.id+'">'+(p.manual?"Считать по задачам":"Ставить вручную")+'</button></div>'
+        +(p.manual?'<div class="row" style="gap:7px;margin-bottom:10px">'
+          +'<button class="btn xs g" data-a="projp" data-id="'+p.id+'" data-v="-10">−10%</button>'
+          +'<button class="btn xs g" data-a="projp" data-id="'+p.id+'" data-v="-5">−5%</button>'
+          +'<button class="btn xs g" data-a="projp" data-id="'+p.id+'" data-v="5">+5%</button>'
+          +'<button class="btn xs g" data-a="projp" data-id="'+p.id+'" data-v="10">+10%</button>'
+          +'<div class="grow"></div><b>'+projProgress(p)+'%</b></div>':'')
         +'<div style="margin:2px 0 12px">'+attBlock("proj",p.id)+'</div>'
         +'<div class="two" style="padding-bottom:2px">'
         +'<button class="btn s o" data-a="editproj" data-id="'+p.id+'">Изменить</button>'
@@ -1211,6 +1232,7 @@ function projectsView(noHead){
       +'<div class="row" data-a="openproj" data-id="'+p.id+'">'
       +'<div class="grow"><h3>'+esc(p.title)+'</h3>'
       +'<div class="mt">'+(all.length-dn)+' в работе<span class="sep"></span>'+pr+'%'
+      +(p.manual?'<span class="sep"></span><span class="pill">вручную</span>':'')
       +(p.due?'<span class="sep"></span>до '+human(p.due):'')+'</div></div>'
       +ring(pr,36,3.5,"")+'</div>'
       +'<div style="margin-top:12px">'+bar(pr)+'</div>'+body+'</div>';
@@ -1233,9 +1255,10 @@ function viewHabits(){
     h+='<div class="card p" style="margin-top:12px;padding:13px"><div class="week">'
       +[0,1,2,3,4,5,6].map(function(i){ var day=addD(ws,i), n=hDone(day), tot=habitsDue(day).length||1;
         var full=n===tot&&n>0, fut=day>t;
-        return '<div class="wd '+(day===t?"tod ":"")+(full?"full":"")+'">'
+        var planned=habitsDue(day).length>0;
+        return '<div class="wd '+(day===t?"tod ":"")+(full?"full ":"")+(fut&&planned?"plan":"")+'">'
           +'<div class="n">'+(!full&&n?'<span class="fill" style="height:'+Math.round(n/tot*100)+'%"></span>':'')
-          +'<b style="opacity:'+(fut?.4:1)+'">'+parse(day).getDate()+'</b></div>'
+          +'<b style="opacity:'+(fut?.62:1)+'">'+parse(day).getDate()+'</b></div>'
           +'<span class="l">'+WD[parse(day).getDay()]+'</span></div>' }).join("")+'</div></div>';
 
     var sorted=D.habits.slice().sort(function(a,b){ return (hDue(b,t)?1:0)-(hDue(a,t)?1:0) });
@@ -1317,7 +1340,7 @@ function viewHabit(){
   var y=+base.slice(0,4), m=+base.slice(5,7)-1;
   var first=new Date(y,m,1), start=addD(iso(first),-mIdx(first));
   h+='<div class="sh"><span class="kicker">'+hDaysLabel(x)+'</span>'
-    +'<span class="act dim">тап по дню — отметка</span></div>';
+    +'<span class="act dim">кружок — впереди по плану</span></div>';
   h+='<div class="card p" style="padding:13px">'
     +'<div class="row" style="margin-bottom:11px">'
     +'<button class="icb" data-a="habm" data-v="-1">‹</button>'
@@ -1329,11 +1352,12 @@ function viewHabit(){
     var day=addD(start,i), dd=parse(day), out=dd.getMonth()!==m;
     if(i>=35&&out) break;
     var due=hDue(x,day), on=!!x.log[day], fut=day>t;
-    var cls="cd"+(out?" out":"")+(day===t?" tod":"")+(on?" sel":"");
+    var cls="cd"+(out?" out":"")+(day===t?" tod":"")+(on?" sel":"")+(due&&fut?" plan":"");
+    var mark = on ? "" : (due&&fut ? '<i class="pl"></i>' : (due&&day<t ? '<i class="b"></i>' : ""));
     h+='<div class="'+cls+'" '+(due&&!fut?'data-a="habday" data-id="'+x.id+'" data-v2="'+day+'"':'')
-      +' style="'+(!due||fut?"opacity:.28":"")+'">'
+      +' style="'+(!due?"opacity:.22":"")+'">'
       +'<span>'+dd.getDate()+'</span>'
-      +'<span class="p">'+(due&&!on&&!fut&&day<t?'<i class="b"></i>':'')+'</span></div>';
+      +'<span class="p">'+mark+'</span></div>';
   }
   h+='</div></div>';
 
@@ -1569,6 +1593,23 @@ function attBlock(kind,id,title){
     +'<input type="file" id="attinput" accept="image/*,.pdf,.txt,.md,.csv" multiple style="display:none">';
 }
 
+/* ---------------- заметка на весь экран ---------------- */
+function viewNote(){
+  var n=byId(D.notes,S.noteId);
+  if(!n){ S.noteId=null; return viewNotes() }
+  var H=headBack("Заметка","Заметки",
+    '<button class="icb" data-a="delnoteScreen" data-id="'+n.id+'">'+IC.x+'</button>');
+  var h='<div class="nedit">'
+    +'<input class="ntitle" id="nt" value="'+esc(n.title||"")+'" placeholder="Название">'
+    +'<div class="row"><span class="t2 dim grow">Дата</span>'
+    +'<input id="nd" type="date" value="'+(n.date||today())+'" style="width:170px;flex:0 0 auto"></div>'
+    +'<textarea class="nbody" id="nb" placeholder="Пишите здесь">'+esc(n.body||"")+'</textarea>'
+    +'</div>'
+    +'<div style="margin-top:6px">'+attBlock("note",n.id)+'</div>'
+    +'<div class="savebar"><button class="btn w" data-a="savenoteScreen">Сохранить</button></div>';
+  return [H,h];
+}
+
 /* ============================================================
    ЕЩЁ — меню-список, каждый пункт открывается отдельным экраном
    ============================================================ */
@@ -1646,7 +1687,7 @@ function statsView(){
     return {p:p,all:a.length,done:a.filter(function(x){return x.done}).length} }).filter(function(x){return x.all});
   if(pr.length){
     h+='<div class="sh"><span class="kicker">По проектам</span></div><div class="card p">'
-      + pr.map(function(x){ var q=pct(x.done,x.all);
+      + pr.map(function(x){ var q=projProgress(x.p);
           return '<div style="margin-bottom:13px"><div class="row t3" style="margin-bottom:6px">'
             +'<span class="grow ell">'+esc(x.p.title)+'</span><span class="dim">'+x.done+'/'+x.all+'</span></div>'
             +bar(q)+'</div>' }).join("")+'</div>';
@@ -1727,7 +1768,7 @@ function notesView(){
   h+='<div class="notes">'
     +'<button class="note add" data-a="newnote"><span class="ic">+</span><span>Новая заметка</span></button>'
     + ns.map(function(n){
-        return '<div class="note" data-a="editnote" data-id="'+n.id+'">'
+        return '<div class="note" data-a="opennote" data-id="'+n.id+'">'
           +'<div class="nt">'+esc(n.title||"Без названия")+'</div>'
           +(n.body?'<div class="nb">'+esc(n.body)+'</div>':'<div class="nb dim">пусто</div>')
           +'<div class="nd">'+human(n.date)+'</div></div>' }).join("")+'</div>';
@@ -1858,7 +1899,7 @@ function render(keep){
     : S.tab==="tasks"  ? viewTasks()
     : S.tab==="habits" ? (S.habId?viewHabit():viewHabits())
     : S.tab==="projects" ? viewProjects()
-    : S.tab==="notes"  ? viewNotes()
+    : S.tab==="notes"  ? (S.noteId?viewNote():viewNotes())
     : S.tab==="money"  ? viewMoney()
     : S.tab==="diary"  ? viewDiary() : viewMore();
   TOP.innerHTML=r[0];
@@ -1898,9 +1939,10 @@ function addTask(o){ var t={id:uid(),title:o.title,prio:o.prio||5,project:o.proj
 var A={};
 
 A.tab=function(e,el){ if(S.tab!==el.dataset.v) S.prev=S.tab;
-  S.tab=el.dataset.v; S.page=null; S.ask=null; S.habId=null; S.moveId=null;
+  S.tab=el.dataset.v; S.page=null; S.ask=null; S.habId=null; S.moveId=null; S.noteId=null;
   window.scrollTo(0,0); render() };
 A.page=function(e,el){
+  if(!el.dataset.v&&S.noteId){ A.savenoteScreen(); return }
   if(!el.dataset.v&&S.habId){ S.habId=null; render(); return }
   if(!el.dataset.v&&!S.page){ S.tab=(S.tab==="diary")?(S.prev==="more"?"more":"today"):"today";
     window.scrollTo(0,0); render(); return }
@@ -1992,10 +2034,10 @@ A.bmove=function(e,el){
   var to=order[clamp(i+dir,0,3)];
   if(to==="late") x.date=addD(t,-1);
   else if(to==="today") x.date=t;
-  else if(to==="week") x.date=addD(t,3);
-  else x.date=addD(t,14);
+  else if(to==="week"){ var we=wEnd(t); x.date=(addD(t,1)<=we)?addD(t,1):we }
+  else x.date=addD(wEnd(t),3);
   x.done=false; buzz();
-  toast("Перенесено в «"+({late:"Просрочено",today:"Сегодня",week:"Эта неделя",later:"Потом"})[to]+"»",
+  toast("Перенесено в «"+({late:"Просрочено",today:"Сегодня",week:"До конца недели",later:"Дальше"})[to]+"»",
     function(){ x.date=old; x.done=oldDone });
   render(true);
 };
@@ -2009,6 +2051,11 @@ A.calsel=function(e,el){ S.calSel=(S.calSel===el.dataset.v)?null:el.dataset.v; r
 /* ---- проекты ---- */
 A.openproj=function(e,el){ S.openProj=(S.openProj===el.dataset.id)?null:el.dataset.id; render(true) };
 A.newproj=function(){ projSheet(null) };
+A.projmode=function(e,el){ var p=byId(D.projects,el.dataset.id); if(!p) return;
+  if(!p.manual){ p.progress=projProgress(p); p.manual=true } else p.manual=false;
+  buzz(); render(true) };
+A.projp=function(e,el){ var p=byId(D.projects,el.dataset.id); if(!p) return;
+  p.manual=true; p.progress=clamp((p.progress||0)+(+el.dataset.v),0,100); buzz(); render(true) };
 A.editproj=function(e,el){ projSheet(byId(D.projects,el.dataset.id)) };
 A.delproj=function(e,el){ var id=el.dataset.id;
   if(!confirm("Удалить проект? Задачи останутся, но без проекта.")) return;
@@ -2039,7 +2086,21 @@ A.goald=function(e,el){ var g=byId(D.goals,el.dataset.id); if(!g) return;
   g.progress=clamp(g.progress+(+el.dataset.v),0,100); buzz(); render(true) };
 A.delgoal=function(e,el){ var g=rmId(D.goals,el.dataset.id);
   toast("Цель удалена",function(){ D.goals.push(g) }); render(true) };
-A.newnote=function(){ noteSheet(null) };
+A.newnote=function(){ var n={id:uid(),title:"",date:today(),body:"",pin:false};
+  D.notes.push(n); S.tab="notes"; S.page=null; noteOpen(n.id) };
+A.opennote=function(e,el){ S.tab="notes"; S.page=null; noteOpen(el.dataset.id) };
+A.savenoteScreen=function(){
+  var n=byId(D.notes,S.noteId); if(!n) return;
+  n.title=val("nt")||"Без названия"; n.date=val("nd")||today(); n.body=val("nb");
+  save(); buzz(); toast("Сохранено"); S.noteId=null; render();
+};
+A.delnoteScreen=function(e,el){
+  var n=byId(D.notes,el.dataset.id); if(!n) return;
+  var empty=!(n.title||"").trim()&&!(n.body||"").trim();
+  if(!empty&&!confirm("Удалить заметку?")) return;
+  filesOf("note",n.id).forEach(function(f){ fdel(f.id).catch(function(){}); rmId(D.files,f.id) });
+  rmId(D.notes,n.id); S.noteId=null; render();
+};
 A.noteday=function(){ askOpen(today()) };
 A.editnote=function(e,el){ noteSheet(byId(D.notes,el.dataset.id)) };
 A.delnote=function(e,el){ var n=rmId(D.notes,el.dataset.id);
@@ -2249,7 +2310,8 @@ document.addEventListener("keydown",function(e){
     if(x0==null||!e.changedTouches.length) return;
     var dx=e.changedTouches[0].clientX-x0, dy=e.changedTouches[0].clientY-y0;
     if(x0<40&&dx>70&&Math.abs(dy)<50){
-      if(S.ask){ A.askclose() } else if(S.habId){ S.habId=null; render() }
+      if(S.ask){ A.askclose() } else if(S.noteId){ A.savenoteScreen() }
+      else if(S.habId){ S.habId=null; render() }
       else if(S.moveId){ S.moveId=null; render() }
       else if(S.page){ S.page=null; render() }
       else if(S.tab==="search"){ A.closesearch() } }
