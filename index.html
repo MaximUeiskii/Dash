@@ -790,6 +790,55 @@ function shrink(file,maxSide,quality){
 function filesOf(kind,id){ return D.files.filter(function(f){ return f.kind===kind&&f.owner===id }) }
 function humanSize(n){ return n>1048576?(n/1048576).toFixed(1)+" МБ":Math.round(n/1024)+" КБ" }
 
+/* ---------------- слияние бэкапов ---------------- */
+/* ключ, по которому запись считается той же самой, даже если id разные */
+var MERGE_KEY={
+  tasks:      function(x){ return "t|"+(x.title||"")+"|"+(x.date||"") },
+  ops:        function(x){ return "o|"+(x.date||"")+"|"+(x.title||"")+"|"+x.amount+"|"+x.cur+"|"+(x.out?1:0) },
+  notes:      function(x){ return "n|"+(x.title||"")+"|"+(x.date||"") },
+  projects:   function(x){ return "p|"+(x.title||"") },
+  habits:     function(x){ return "h|"+(x.title||"") },
+  goals:      function(x){ return "g|"+(x.title||"") },
+  principles: function(x){ return "r|"+(x.text||"") },
+  limits:     function(x){ return "l|"+(x.title||"") },
+  debts:      function(x){ return "d|"+(x.title||"")+"|"+x.amount },
+  journal:    function(x){ return "j|"+(x.date||"") },
+  reviews:    function(x){ return "v|"+(x.week||"") },
+  files:      function(x){ return "f|"+x.id }
+};
+/* Считаем по совпадениям, но одинаковые записи не схлопываем:
+   если у вас два одинаковых кофе в один день, оба останутся. */
+function mergeScan(inc,apply){
+  var added=0;
+  FIELDS.forEach(function(k){
+    if(!Array.isArray(inc[k])) return;
+    if(apply&&!Array.isArray(D[k])) D[k]=[];
+    var key=MERGE_KEY[k]||function(x){ return k+"|"+x.id };
+    var have={},ids={};
+    (D[k]||[]).forEach(function(x){ var kk=key(x); have[kk]=(have[kk]||0)+1; ids[x.id]=1 });
+    var used={};
+    inc[k].forEach(function(x){
+      if(ids[x.id]) return;                      // такая запись уже есть по id
+      var kk=key(x); used[kk]=(used[kk]||0)+1;
+      if(used[kk]<=(have[kk]||0)) return;        // столько же одинаковых уже лежит
+      added++;
+      if(apply){ D[k].push(x); ids[x.id]=1 }
+    });
+  });
+  if(apply){
+    if(inc.settings){
+      for(var s2 in inc.settings)
+        if(D.settings[s2]===undefined||D.settings[s2]===null) D.settings[s2]=inc.settings[s2];
+      if(inc.settings.rates) for(var c in inc.settings.rates)
+        if(D.settings.rates[c]===undefined) D.settings.rates[c]=inc.settings.rates[c];
+    }
+    normalize();
+  }
+  return added;
+}
+function mergeCount(inc){ return mergeScan(inc,false) }
+function mergeInto(inc){ return mergeScan(inc,true) }
+
 /* ---------------- тема ---------------- */
 function applyTheme(){
   var pal=D.settings.palette||"pastel";
@@ -853,7 +902,13 @@ function totalRub(){ return D.accounts.reduce(function(s,a){ return s+toRub(a.am
 function monthOps(){ var p=today().slice(0,7); return D.ops.filter(function(o){ return String(o.date).slice(0,7)===p }) }
 function monthIn(){ return monthOps().reduce(function(s,o){ return s+(o.out?0:toRub(o.amount,o.cur)) },0) }
 function monthOut(){ return monthOps().reduce(function(s,o){ return s+(o.out?toRub(o.amount,o.cur):0) },0) }
-function spentCat(c){ return monthOps().reduce(function(s,o){ return s+((o.out&&o.cat===c)?toRub(o.amount,o.cur):0) },0) }
+/* потрачено по категории. cur — валюта лимита, чтобы не сравнивать юани с рублями */
+function fromRub(v,cur){ var r=D.settings.rates[cur]; return (r?v/r:v) }
+function spentCat(c,cur){ return monthOps().reduce(function(s,o){
+  if(!o.out||o.cat!==c) return s;
+  if(!cur) return s+toRub(o.amount,o.cur);
+  return s+(o.cur===cur ? o.amount : fromRub(toRub(o.amount,o.cur),cur));
+},0) }
 
 /* прогресс проекта: по задачам или вручную */
 function projProgress(p){
@@ -934,7 +989,7 @@ function reviewStreak(){
 /* ============================================================
    НАВИГАЦИЯ, «СЕГОДНЯ», «ЗАДАЧИ»
    ============================================================ */
-var S={tab:"today",prev:"today",page:null,sub:{},calM:null,calSel:null,openProj:null,q:"",nq:"",bcol:1,fold:{},ask:null,habId:null,habM:null,moveId:null,noteId:null};
+var S={tab:"today",prev:"today",page:null,sub:{},calM:null,calSel:null,openProj:null,q:"",nq:"",bcol:1,fold:{},ask:null,habId:null,habM:null,moveId:null,noteId:null,projDone:{}};
 var TOP=document.getElementById("top"), V=document.getElementById("v"), NAV=document.getElementById("nav");
 
 var IC={
@@ -1014,7 +1069,8 @@ function viewToday(){
   var ov=overdue().length, hd=hDone(), js=jStreak(), hdue=habitsDue(t).length;
 
   var H=head(WDF[d.getDay()]+", "+d.getDate()+" "+MON[d.getMonth()],
-    greet()+(nm?", "+esc(nm):""), ring(ds.pct,42,4,ds.pct+"%"));
+    greet()+(nm?", "+esc(nm):""),
+    '<button data-a="dayinfo" style="flex:0 0 auto;padding:4px;margin:-4px">'+ring(ds.pct,42,4,ds.pct+"%")+'</button>');
 
   var h='<div class="strip" style="grid-template-columns:repeat(3,minmax(0,1fr));margin-top:10px">'
     + st(pd+"/"+lst.length,"дела","g")
@@ -1103,6 +1159,15 @@ function viewTasks(){
       +'<span class="act dim">'+gr[k].length+'</span></div>'
       +'<div class="card list">'+sortT(gr[k]).map(function(x){ return taskRow(x,{noProj:true}) }).join("")+'</div>' }).join("")
     ||'<div class="card"><div class="empty"><b>Задач нет</b>Добавьте первую кнопкой сверху</div></div>';
+  var dn=live().filter(function(x){ return x.done }).sort(function(a,b){
+    return String(b.doneAt||"").localeCompare(String(a.doneAt||"")) });
+  if(dn.length){
+    h+='<div class="card" style="margin-top:12px">'
+      +'<div class="fold'+(S.showDone?" open":"")+'" data-a="showdone" style="border-top:0">'
+      +'<span class="n">Выполнено</span><span class="c">'+dn.length+'</span><span class="chev"></span></div>'
+      +(S.showDone?'<div class="list">'+dn.slice(0,60).map(function(x){ return taskRow(x,{noDate:true}) }).join("")+'</div>':'')
+      +'</div>';
+  }
   return [H,h];
 }
 
@@ -1208,10 +1273,17 @@ function projectsView(noHead){
     var open=S.openProj===p.id, body="";
     if(open){
       var lst=sortT(all.filter(function(t){ return !t.done }));
+      var dnl=all.filter(function(t){ return t.done }).sort(function(a,b){
+        return String(b.doneAt||"").localeCompare(String(a.doneAt||"")) });
+      var showDone=S.projDone[p.id];
       body='<div style="border-top:1px solid var(--line);margin-top:13px">'
         +(p.result?'<div class="t3 mut" style="padding:13px 0 4px;line-height:1.45">'+esc(p.result)+'</div>':'')
         +'<div class="list" style="margin:0 -15px">'+(lst.length?lst.map(function(x){return taskRow(x,{noProj:true})}).join("")
             :'<div class="empty" style="padding:18px"><b>Открытых задач нет</b></div>')+'</div>'
+        +(dnl.length?'<div class="fold'+(showDone?" open":"")+'" data-a="projdone" data-id="'+p.id+'" style="margin:0 -15px">'
+            +'<span class="n">Выполнено</span><span class="c">'+dnl.length+'</span><span class="chev"></span></div>'
+            +(showDone?'<div class="list" style="margin:0 -15px">'
+              +dnl.map(function(x){ return taskRow(x,{noProj:true,noDate:true}) }).join("")+'</div>':''):'')
         +'<div class="addline" style="padding:11px 0"><span class="plus">+</span>'
         +'<input class="grow" data-addp="'+p.id+'" placeholder="Новая задача проекта" enterkeyhint="done"></div>'
         +'<div class="row" style="margin:14px 0 4px;gap:8px">'
@@ -1401,11 +1473,11 @@ function viewMoney(){
     h+='<div class="sh"><span class="kicker">Лимиты</span>'
       +'<button class="act" data-a="page" data-v="limits">Настроить</button></div>';
     h+='<div class="card p">'+(D.limits.length?D.limits.slice(0,4).map(function(l){
-        var s=spentCat(l.title), p=l.limit?Math.round(s/l.limit*100):0;
+        var s=spentCat(l.title,l.cur), p=l.limit?Math.round(s/l.limit*100):0;
         return '<div style="margin-bottom:13px"><div class="row t3" style="margin-bottom:6px">'
           +'<span class="grow ell">'+esc(l.title)+'</span>'
           +'<span class="'+(s>l.limit?"":"dim")+'" style="'+(s>l.limit?"color:var(--bad);font-weight:600":"")+'">'
-          +num(s)+' / '+num(l.limit)+'</span></div>'
+          +num(s)+' / '+num(l.limit)+' '+(CUR[l.cur]?CUR[l.cur].s:l.cur)+'</span></div>'
           +bar(p,p>100?"bad":(p>80?"warn":""))+'</div>' }).join("")
       :'<div class="empty" style="padding:18px"><b>Лимиты не заданы</b></div>')+'</div>';
 
@@ -1445,9 +1517,12 @@ function viewMoney(){
   var gr={},ord=[];
   ops.forEach(function(o){ if(!gr[o.date]){gr[o.date]=[];ord.push(o.date)} gr[o.date].push(o) });
   h+=(ord.length?ord.map(function(k){
-    var sum=gr[k].reduce(function(s,o){ return s+(o.out?-1:1)*toRub(o.amount,o.cur) },0);
+    var curs={}; gr[k].forEach(function(o){ curs[o.cur]=1 });
+    var one=Object.keys(curs).length===1?Object.keys(curs)[0]:null;
+    var sum=gr[k].reduce(function(s,o){ return s+(o.out?-1:1)*(one?o.amount:toRub(o.amount,o.cur)) },0);
+    var sym=one?(CUR[one]?CUR[one].s:one):"₽";
     return '<div class="sh" style="margin-top:14px"><span class="kicker">'+human(k)+'</span>'
-      +'<span class="act dim">'+(sum>=0?"+":"−")+num(Math.abs(sum))+' ₽</span></div>'
+      +'<span class="act dim">'+(sum>=0?"+":"−")+num(Math.abs(sum))+' '+sym+'</span></div>'
       +'<div class="card list">'+gr[k].map(function(o){
         return '<div class="it"><div class="bd"><div class="tt">'+esc(o.title||o.cat||"Операция")+'</div>'
           +(o.cat?'<div class="mt">'+esc(o.cat)+'</div>':'')+'</div>'
@@ -1789,14 +1864,15 @@ function prinView(){
 
 function limitsView(){
   var h='<div class="card p" style="margin-top:12px">'+(D.limits.length?D.limits.map(function(l){
-    var s=spentCat(l.title),p=l.limit?Math.round(s/l.limit*100):0;
+    var s=spentCat(l.title,l.cur),p=l.limit?Math.round(s/l.limit*100):0;
     return '<div style="margin-bottom:16px"><div class="row" style="margin-bottom:6px">'
       +'<span class="grow t3 ell">'+esc(l.title)+'</span>'
       +'<span class="t3 '+(s>l.limit?"":"dim")+'" style="'+(s>l.limit?"color:var(--bad);font-weight:600":"")+'">'
       +num(s)+' / '+num(l.limit)+'</span>'
       +'<button class="icb" data-a="dellim" data-id="'+l.id+'">'+IC.x+'</button></div>'
       +bar(p,p>100?"bad":(p>80?"warn":"ok"))
-      +'<div class="t2 dim" style="margin-top:5px">'+(s>l.limit?"перерасход "+num(s-l.limit)+" ₽":"осталось "+num(l.limit-s)+" ₽")+'</div></div>' }).join("")
+      +'<div class="t2 dim" style="margin-top:5px">'+(s>l.limit?"перерасход "+num(s-l.limit):"осталось "+num(l.limit-s))
+      +' '+(CUR[l.cur]?CUR[l.cur].s:l.cur)+'</div></div>' }).join("")
     :'<div class="empty"><b>Лимитов нет</b>Задайте потолок по паре категорий</div>')+'</div>';
   return h;
 }
@@ -1852,7 +1928,9 @@ function setView(){
   h+='<div class="sh"><span class="kicker">Данные</span></div><div class="card p">'
     +'<div class="t3 mut" style="margin-bottom:13px;line-height:1.5">Всё хранится только в этом телефоне и никуда не отправляется. Очистка данных Safari сотрёт их — держите бэкап.</div>'
     +'<button class="btn w g" data-a="export">Выгрузить бэкап</button><div class="sp"></div>'
-    +'<button class="btn w g" data-a="import">Загрузить бэкап</button><div class="sp"></div>'
+    +'<button class="btn w g" data-a="import">Загрузить бэкап</button>'
+    +'<div class="t2 dim" style="margin:7px 0 0;line-height:1.4">При загрузке спросит: добавить недостающее или заменить всё.</div>'
+    +'<div class="sp"></div>'
     +'<button class="btn w o" data-a="cleardemo">Убрать демо-данные</button><div class="sp"></div>'
     +'<button class="btn w d" data-a="wipe">Стереть всё</button>'
     +'<input type="file" id="fimp" accept="application/json,.json" style="display:none"></div>';
@@ -2003,6 +2081,12 @@ A.movecancel=function(){ S.moveId=null; render() };
 A.tomorrow=function(e,el){ var t=byId(D.tasks,el.dataset.id); if(!t) return;
   var old=t.date; t.date=addD(today(),1); buzz();
   toast("Перенесено на завтра",function(){ t.date=old }); render(true) };
+A.dayinfo=function(){
+  var ds=dayStat();
+  toast(ds.before?("Рабочий день "+D.settings.dayStart+"–"+D.settings.dayEnd+" ещё не начался")
+    : ds.after?("Рабочий день "+D.settings.dayStart+"–"+D.settings.dayEnd+" закончился")
+    : ("День "+D.settings.dayStart+"–"+D.settings.dayEnd+" · прошло "+ds.pct+"% · осталось "+hm(ds.left)));
+};
 A.rollover=function(){
   var lst=overdue(); if(!lst.length) return;
   var prev=lst.map(function(t){ return {t:t,d:t.date} });
@@ -2049,6 +2133,9 @@ A.caltoday=function(){ S.calM=today().slice(0,7); S.calSel=today(); render(true)
 A.calsel=function(e,el){ S.calSel=(S.calSel===el.dataset.v)?null:el.dataset.v; render(true) };
 
 /* ---- проекты ---- */
+A.projdone=function(e,el){ var id=el.dataset.id;
+  S.projDone[id]=!S.projDone[id]; render(true) };
+A.showdone=function(){ S.showDone=!S.showDone; render(true) };
 A.openproj=function(e,el){ S.openProj=(S.openProj===el.dataset.id)?null:el.dataset.id; render(true) };
 A.newproj=function(){ projSheet(null) };
 A.projmode=function(e,el){ var p=byId(D.projects,el.dataset.id); if(!p) return;
@@ -2108,6 +2195,42 @@ A.delnote=function(e,el){ var n=rmId(D.notes,el.dataset.id);
 A.delprin=function(e,el){ var p=rmId(D.principles,el.dataset.id);
   toast("Удалено",function(){ D.principles.push(p) }); render(true) };
 A.editrev=function(){ revSheet() };
+
+/* ---- загрузка бэкапа: заменить или добавить ---- */
+var _imp=null;
+function importSheet(o,name){
+  _imp=o;
+  var cnt=function(k){ return Array.isArray(o[k])?o[k].length:0 };
+  var add=mergeCount(o);
+  var mine=FIELDS.reduce(function(s2,k){ return s2+(Array.isArray(D[k])?D[k].length:0) },0);
+  sheet('<h2 style="margin-bottom:4px">Загрузить бэкап</h2>'
+    +'<div class="t3 dim" style="margin-bottom:14px">'+esc(name||"файл")+'</div>'
+    +'<div class="strip" style="grid-template-columns:repeat(3,minmax(0,1fr));margin-bottom:14px">'
+    + st(cnt("tasks"),"задач в файле","g")
+    + st(cnt("ops"),"операций","s")
+    + st(add,"новых записей","b")+'</div>'
+    +'<div class="card p" style="margin-bottom:12px"><div class="t3 mut" style="line-height:1.5">'
+    +'<b>Добавить</b> — ваши '+mine+' записей останутся, из файла возьмётся только то, чего у вас нет. '
+    +'Совпадения по названию и дате не задваиваются.<br><br>'
+    +'<b>Заменить всё</b> — текущие данные стираются целиком.</div></div>'
+    +'<button class="btn w" data-a="impmerge">Добавить недостающее</button>'
+    +'<div class="sp"></div>'
+    +'<button class="btn w o" data-a="impreplace">Заменить всё</button>'
+    +'<div class="sp"></div>'
+    +'<button class="btn w g" data-a="cancel">Отмена</button>');
+}
+A.impmerge=function(){
+  if(!_imp) return;
+  var n=mergeInto(_imp); save(); applyTheme(); closeSheet(); render();
+  toast(n?("Добавлено записей: "+n):"Всё уже было на месте");
+  _imp=null;
+};
+A.impreplace=function(){
+  if(!_imp) return;
+  if(!confirm("Стереть текущие данные и поставить файл вместо них?")) return;
+  D=_imp; normalize(); save(); applyTheme(); closeSheet(); render();
+  toast("Данные заменены"); _imp=null;
+};
 
 /* ---- вложения ---- */
 var _att=null;
@@ -2281,7 +2404,7 @@ document.addEventListener("change",function(e){
     var r=new FileReader();
     r.onload=function(){ try{ var o=JSON.parse(r.result);
       if(!o||typeof o!=="object"||!Array.isArray(o.tasks)) throw 0;
-      D=o; normalize(); save(); applyTheme(); render(); toast("Бэкап загружен");
+      importSheet(o,f.name);
     }catch(err){ toast("Файл не подошёл") } };
     r.readAsText(f); t.value="";
   }
